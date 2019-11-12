@@ -49,7 +49,7 @@ typedef struct{
 RecipeStruct Recipe[NUM_RECIPIES]={{4.0,4.0},{2.5,5.5},{3.0,0.0}};
 ProdStruct Prod[NUM_PRODS]={{0.3,{0.3,0.3,0.3,0.3,0.3},0,"WHSKY",17},{0.3,{0.3,0.3,0.3,0.3,0.3},0,"WATER",16}};
 
-float startingWeight=0;
+float startingWeight=0.0;
 float targetWeight=0;
 float currentWeight=0.0;
 int currentProd=0;
