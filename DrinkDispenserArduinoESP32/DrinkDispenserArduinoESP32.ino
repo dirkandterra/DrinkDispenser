@@ -1,5 +1,6 @@
 #include <HX711_ADC.h>
 #include <SPI.h>
+#include <EEPROM.h>
 #include <SFE_MicroOLED.h>
 
 //HX711 constructor (dout pin, sck pin)
@@ -26,7 +27,7 @@ long t;
 #define heatLed 26
 #define mainLed 27
 
-#define NUM_RECIPIES 3
+#define NUM_RECIPIES 4
 #define NUM_PRODS 2
 #define NUM_CAL_AVG 5
 
@@ -46,10 +47,19 @@ typedef struct{
 	float prod_Amt[NUM_PRODS];
 }RecipeStruct;
 
-RecipeStruct Recipe[NUM_RECIPIES]={{4.0,4.0},{2.5,5.5},{3.0,0.0}};
-ProdStruct Prod[NUM_PRODS]={{0.3,{0.3,0.3,0.3,0.3,0.3},0,"WHSKY",17},{0.3,{0.3,0.3,0.3,0.3,0.3},0,"WATER",16}};
+typedef struct{
+  uint8_t calProd[NUM_PRODS];
+  uint16_t usedProd[NUM_PRODS];
+  uint8_t initialized;
+}EEVars;
 
-float startingWeight=0.0;
+RecipeStruct Recipe[NUM_RECIPIES]={{4.0,4.0},{2.5,5.5},{3.0,0.0},{0.0,4.0}};
+ProdStruct Prod[NUM_PRODS]={{0.3,{0.3,0.3,0.3,0.3,0.3},0,"WHSKY",17},{.7,{.7,.7,.7,.7,.7},0,"WATER",16}};
+EEVars EE;
+
+uint8_t *EE_START=&EE.calProd[0];
+
+float startingWeight=0;
 float targetWeight=0;
 float currentWeight=0.0;
 int currentProd=0;
@@ -67,10 +77,14 @@ void tareScale(void);
 void brewBtnPushed(void);
 void sizeBtnPushed(void);
 void updateScreen(void);
+void EEPROM_Read(uint8_t *data, uint8_t bytes);
+void EEPROM_Write(uint8_t *data, uint8_t bytes);
+
 MicroOLED oled(PIN_RESET, PIN_DC, PIN_CS); //Example SPI declara
 
 void setup() {
     int ii=0;
+    int jj=0;
     Serial.begin(115200);
     //Zerial2.begin(9600);
     Serial.println("Wait...");
@@ -95,12 +109,34 @@ void setup() {
         ledcSetup(ii, freq, resolution);
         ledcAttachPin(Prod[ii].mtr_Pin, ii);
     }
+
+    //initialize eevars
+    EEPROM_Read(&EE.initialized,1);
+    if(EE.initialized=0xCD){
+      for(ii=0;ii<NUM_PRODS;ii++){
+          EEPROM_Read(&EE.calProd[ii],1);
+          for(jj=0;jj<NUM_CAL_AVG;jj++){
+              Prod[ii].calArray[jj]=(float)EE.calProd[ii]/10;
+          }
+          Prod[ii].cal=(float)EE.calProd[ii]/10;
+          Serial.print("Prod Cal: ");
+          Serial.println(Prod[ii].cal);
+          EEPROM_Read((uint8_t *)&EE.usedProd[ii],2);
+      }
+    }
+    else{
+      EE.initialized=0xCD;
+      EEPROM_Write(&EE.initialized,1);
+    }
+    
+    
 }
 
 void loop() {
 	//update() should be called at least as often as HX711 sample rate; >10Hz@10SPS, >80Hz@80SPS
 	//longer delay in sketch will reduce effective sample rate (be carefull with delay() in loop)
 	int ii=0;
+  uint8_t temp=0;
 	LoadCell.update();
 	//get smoothed value from data set + current calibration factor
 	if (millis() > t + 250) {
@@ -172,7 +208,7 @@ void loop() {
 					if(currentProd<NUM_PRODS){
 						//Does the recipe call for this product?
 						if(Recipe[currentRecipe].prod_Amt[currentProd]>0){
-							targetWeight=startingWeight+Recipe[currentRecipe].prod_Amt[currentProd];
+							targetWeight=currentWeight +Recipe[currentRecipe].prod_Amt[currentProd];
 							fillTimeout=45*4;
 							ledcWrite(currentProd, dutycycle);		//Start the Motor
               batchState++;
@@ -193,7 +229,10 @@ void loop() {
 					break;				
 				case 3:
 					//Are we to target minus cal value?
-					if((currentWeight<(targetWeight-Prod[currentProd].cal)) && fillTimeout>0){          
+					if((currentWeight<(targetWeight-Prod[currentProd].cal)) && fillTimeout>0){     
+            if(currentProd){
+              digitalWrite(brewLed, 0);
+            }     
 						digitalWrite(heatLed, 0);
 						Serial.print("MTR ");
 						Serial.print(currentProd);
@@ -218,6 +257,7 @@ void loop() {
 						Serial.print(currentProd);
 						Serial.println(" OFF");
 						digitalWrite(heatLed, 1);
+            digitalWrite(heatLed, 1);
 						ledcWrite(currentProd, 0);
 						batchState++;
 						batchDelay=20;          //let weight settle
@@ -244,6 +284,12 @@ void loop() {
 					Serial.println("Batch Complete");
 					batchState=0;
 					batchDelay=20;				//Linger on this message for 2 seconds
+          //store off NV
+          for(ii=0;ii<NUM_PRODS;ii++){
+            temp=(uint8_t)(Prod[ii].cal*10);
+            EE.calProd[ii]=temp; 
+            EEPROM_Write(&EE.calProd[ii],1);
+          }
 					break;
 				case 0:
 				default:
@@ -317,7 +363,7 @@ void sizeBtnPushed() {
 			batchError=0;
 		}
 		else{ 
-			if(currentRecipe<NUM_RECIPIES){
+			if(currentRecipe<(NUM_RECIPIES-1)){
 				currentRecipe++;
 			}
 			else{
@@ -378,3 +424,20 @@ void updateScreen(){
 	}
 	oled.display();							//Make it so
 }
+
+void EEPROM_Read(uint8_t *data, uint8_t bytes){
+    int ii;
+    int addr=data-EE_START;
+    for(ii=0; ii<bytes; ii++){
+      data[ii]=EEPROM.read(ii+addr);
+    }
+    EEPROM.commit();  
+}
+void EEPROM_Write(uint8_t *data, uint8_t bytes){
+    int ii;
+    int addr=data-EE_START;
+    for(ii=0; ii<bytes; ii++){
+       EEPROM.write((ii+addr),data[ii]); 
+    }
+}
+
