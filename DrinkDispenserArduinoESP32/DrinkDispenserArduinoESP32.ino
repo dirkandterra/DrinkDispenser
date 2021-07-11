@@ -1,4 +1,6 @@
-#include <HX711_ADC.h>
+//Last update 7/11/21
+
+#include "HX711_ADC_DR.h"
 #include <SPI.h>
 #include <EEPROM.h>
 #include <SFE_MicroOLED.h>
@@ -109,7 +111,7 @@ void subtractProductUsed();
 MicroOLED oled(PIN_RESET, PIN_DC, PIN_CS); //Example SPI declara
 
 //*WIFI STUFF*
-// Replace with desired credentials in CustomInfo.h
+// Replace with your network credentials
 const char* ssidAP     = SSID_AP;
 const char* passwordAP = PWD_AP;
 AsyncWebServer server(80);
@@ -206,6 +208,8 @@ void setup() {
     long stabilisingtime = 2000; // tare preciscion can be improved by adding a few seconds of stabilising time
     LoadCell.start(stabilisingtime);
     LoadCell.setCalFactor(12737.0); // user set calibration factor (float)
+    Serial.print("Version: ");
+    Serial.println(VERSION);
     Serial.println("Startup + tare is complete");
     delay(100);
     oled.begin();
@@ -465,8 +469,8 @@ void batchingLoop(){
 					startingWeight=0;
 					currentProd=0;
 					batchError=0;
-          			scaleError=0;
-          			scrnMode=SCRN_NORMAL;
+          scaleError=0;
+          scrnMode=SCRN_NORMAL;
 					batchState++;
 					break;
 				case 2:
@@ -784,8 +788,8 @@ void factoryReset(){
     EEPROM_Write((uint8_t *)&EE.calProd[ii],2);
   }      
   EEPROM_Write(&EE.initialized,1);
-  strcpy(EE.ssid,"Ricker");
-  strcpy(EE.pwd,"104Ricker");
+  strcpy(EE.ssid,SSID_EXTERNAL);
+  strcpy(EE.pwd,PWD_EXTERNAL);
   backupWifiVars();
   
 }
