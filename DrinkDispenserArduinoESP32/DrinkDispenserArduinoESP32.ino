@@ -7,7 +7,7 @@
 #include <ESPAsyncWebServer.h>
 #include "CustomInfo.h"
 
-#define VERSION "1.3"
+#define VERSION "1.4"
 
 //HX711 constructor (dout pin, sck pin)
 HX711_ADC LoadCell(21, 22);
@@ -85,7 +85,7 @@ int brewBtnOld=0;
 int sizeBtnOld=0;
 int currentRecipe=0;
 int batchDelay=0;
-int batchError=0;
+int batchError=0,scaleError=0;
 
 typedef enum{
   SCRN_NORMAL=0,
@@ -103,6 +103,8 @@ void EEPROM_Write(uint8_t *data, uint8_t bytes);
 void backupWifiVars();
 void batchingLoop();
 void refreshStats();
+void factoryReset();
+void subtractProductUsed();
 
 MicroOLED oled(PIN_RESET, PIN_DC, PIN_CS); //Example SPI declara
 
@@ -123,6 +125,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
               <link rel=\"icon\" href=\"data:,\">
               <style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}
+              a {font-size: 40px}
               .submital { background-color: #4CAF50; border: none; color: white; padding: 16px 40px;
               text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
               .button2 { background-color: #555555; border: none; color: white; padding: 16px 40px;
@@ -134,12 +137,14 @@ const char index_html[] PROGMEM = R"rawliteral(
           <a href="/stats">Stats<br>
           <a href="/recipe">Recipe<br>
           <a href="/wifi">Wifi<br>
+          <a href="/get?fReset=1">Factory Reset<br>
           
 </body></html>)rawliteral";
 const char statsbefore_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
               <link rel=\"icon\" href=\"data:,\">
               <style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}
+              a {font-size: 40px}
               .submital { background-color: #4CAF50; border: none; color: white; padding: 16px 40px;
               text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
               .button2 { background-color: #555555; border: none; color: white; padding: 16px 40px;
@@ -158,6 +163,7 @@ const char recipe_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
                 <link rel=\"icon\" href=\"data:,\">
                 <style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}
+                a {font-size: 40px}
                 .submital { background-color: #4CAF50; border: none; color: white; padding: 16px 40px;
                 text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
                 .button2 {background-color: #555555;}</style></head>
@@ -173,6 +179,7 @@ const char wifi_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
                 <link rel=\"icon\" href=\"data:,\">
                 <style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}
+                a {font-size: 40px}
                 .submital { background-color: #4CAF50; border: none; color: white; padding: 16px 40px;
                 text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
                 .button2 {background-color: #555555;}</style></head>
@@ -244,20 +251,10 @@ void setup() {
       for(ii=0;ii<29;ii++){
           EEPROM_Read((uint8_t*)&EE.pwd[ii],1);
           if(EE.pwd[ii]==0){ii=30;}
-      }  
-      
+      }    
     }
     else{
-      EE.initialized=INITVAL;
-      for(ii=0;ii<NUM_PRODS;ii++){
-        EE.calProd[ii]=(uint8_t)(Prod[ii].cal*100);
-        EEPROM_Write((uint8_t *)&EE.calProd[ii],2);
-      }      
-      EEPROM_Write(&EE.initialized,1);
-      // Replace with desired credentials in CustomInfo.h
-      strcpy(EE.ssid,SSID_EXTERNAL);
-      strcpy(EE.pwd,PWD_EXTERNAL);
-      backupWifiVars();
+      factoryReset();
     }
     for(ii=0;ii<NUM_PRODS;ii++){
       Serial.print("Prod Cal: ");
@@ -364,6 +361,12 @@ void setup() {
         EEPROM_Write((uint8_t *)&EE.prodLeft[1], 2);
       }
     }
+    if (request->hasParam("fReset")) {
+      inputMessage = request->getParam("fReset")->value();
+      inputNumber = inputMessage.toFloat();
+      inputMessage2 = "Factory Reset" ;
+      factoryReset();
+    }
     
     
     Serial.println(inputMessage);    
@@ -415,11 +418,19 @@ void batchingLoop(){
 
 		currentWeight = (LoadCell.getData());
 		float v = LoadCell.getCalFactor();
-		//Serial.print("Load_cell output val: ");
-		//Serial.print(currentWeight);
-		//Serial.print("      Load_cell calFactor: ");
-		//Serial.println(v);
-		  updateScreen();
+		/*Serial.print("Load_cell output val: ");
+		Serial.println(currentWeight);
+    Serial.print(LoadCell.DR);
+    Serial.print("(");
+    Serial.print(LoadCell.smoothedData());
+		Serial.print(" >> ");
+		Serial.print(LoadCell.getDivBit());
+    Serial.print(" - ");
+    Serial.print(LoadCell.getTareOffset());
+    Serial.print(")/");
+    Serial.print(LoadCell.getCalFactor());*/
+		updateScreen();
+     
 
 		// Create a string which is the integer value of the weight times 10,
 		//  to remove the decimal point.
@@ -454,7 +465,8 @@ void batchingLoop(){
 					startingWeight=0;
 					currentProd=0;
 					batchError=0;
-          scrnMode=SCRN_NORMAL;
+          			scaleError=0;
+          			scrnMode=SCRN_NORMAL;
 					batchState++;
 					break;
 				case 2:
@@ -478,6 +490,9 @@ void batchingLoop(){
 					}
 					//Done with products
 					else{
+            digitalWrite(brewLed, 1);
+            digitalWrite(heatLed, 1);
+            digitalWrite(mainLed, 1);
 						batchState=5;
 						batchDelay=20;
 					}
@@ -487,8 +502,11 @@ void batchingLoop(){
 					if((currentWeight<(targetWeight-Prod[currentProd].cal)) && fillTimeout>0){     
             if(currentProd){
               digitalWrite(brewLed, 0);
-            }     
-						digitalWrite(heatLed, 0);
+              digitalWrite(heatLed, 1); 
+            } else{
+              digitalWrite(brewLed, 1);
+              digitalWrite(heatLed, 0);   
+            }
 						Serial.print("MTR ");
 						Serial.print(currentProd);
 						Serial.print(" ON - ");
@@ -503,6 +521,7 @@ void batchingLoop(){
 						Serial.print(currentProd);
 						Serial.println(" Timeout");
 						ledcWrite(currentProd, 0);
+            subtractProductUsed();        //May not have completed, but product was used
 						batchState=0;
 						batchError=currentProd+1;
             scrnMode=SCRN_ERROR;
@@ -520,14 +539,14 @@ void batchingLoop(){
 					}
 					break;
 				case 4: //update Cal
-          temp16=(uint16_t)((currentWeight-startingWeight)*10);
-          if(temp16>EE.prodLeft[currentProd]){
-            EE.prodLeft[currentProd]=0;
-          }else{
-            EE.prodLeft[currentProd]-temp16;
+          if((currentWeight-startingWeight)<-0.5){     //if the current scale reading is less than starting, more than 0.5 oz, there was a problem (somebody picked up cup before it was done weighing?)
+            batchState=0;
+            scaleError=1;
+            batchError=currentProd+1;
+            scrnMode=SCRN_ERROR;  
+            break;                                    //Stop the batch now, don't adjust cal or amount used
           }
-          EE.prodLeft[currentProd]-=(uint16_t)((currentWeight-startingWeight)*10);
-          EEPROM_Write((uint8_t *)&EE.prodLeft[currentProd],2);
+          subtractProductUsed();
 					Prod[currentProd].calArray[Prod[currentProd].calArrayPtr]=(currentWeight-targetWeight)+Prod[currentProd].cal;
 					Prod[currentProd].cal=0;
 					for (ii=0;ii<NUM_CAL_AVG;ii++){
@@ -619,6 +638,7 @@ void brewBtnPushed() {
 
 void sizeBtnPushed() {
 	if (batchState>0){
+    subtractProductUsed();        //May not have completed, but product was used
 		Serial.println("Manual Batch Stop....");
 		batchState=0;
 	}
@@ -682,10 +702,15 @@ void updateScreen(){
             oled.setFontType(0);         // Smallest font
             oled.print(Prod[batchError-1].name); 
             oled.setCursor(0, 8); 
-            oled.print("Timeout"); 
+            if(scaleError){
+              oled.print("ScaleErr");
+            }else{
+              oled.print("Timeout");
+            } 
   				}
           else{
            batchError=0;
+           scaleError=0;
            scrnMode=SCRN_NORMAL;
           }
           break;
@@ -737,4 +762,30 @@ void refreshStats(){
   stats="<p>Whiskey Left: " + String((float)EE.prodLeft[0]/10) +
         "</p><p>Water Left: " + String((float)EE.prodLeft[1]/10) + "</p><br>";
   stats_html=statsbefore_html + stats + statsafter_html;
+}
+
+void subtractProductUsed(){
+    uint16_t temp16=0;
+    temp16=(uint16_t)((currentWeight-startingWeight)*10);
+    if(temp16>EE.prodLeft[currentProd]){
+      EE.prodLeft[currentProd]=0;
+    }else{
+      EE.prodLeft[currentProd]-=temp16;
+    }
+    EEPROM_Write((uint8_t *)&EE.prodLeft[currentProd],2);
+}
+
+void factoryReset(){
+  int ii=0;
+  EE.initialized=INITVAL;
+  for(ii=0;ii<NUM_PRODS;ii++){
+    Prod[ii].cal=0;
+    EE.calProd[ii]=(uint8_t)(Prod[ii].cal*100);
+    EEPROM_Write((uint8_t *)&EE.calProd[ii],2);
+  }      
+  EEPROM_Write(&EE.initialized,1);
+  strcpy(EE.ssid,"Ricker");
+  strcpy(EE.pwd,"104Ricker");
+  backupWifiVars();
+  
 }
